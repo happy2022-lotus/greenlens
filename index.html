@@ -1,0 +1,522 @@
+import React, { useState, useEffect, useRef } from 'react';
+import { Camera, MapPin, Heart, Send, Image as ImageIcon, X, AlertCircle, Smile, Frown, Meh, Angry, Trash2, Edit2, RotateCcw, Lock } from 'lucide-react';
+import { initializeApp } from 'firebase/app';
+import { getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken } from 'firebase/auth';
+import { getFirestore, collection, addDoc, onSnapshot, query, orderBy, serverTimestamp, doc, updateDoc, increment, deleteDoc } from 'firebase/firestore';
+
+// --- Firebase Configuration & Initialization ---
+const firebaseConfig = JSON.parse(__firebase_config);
+const app = initializeApp(firebaseConfig);
+const auth = getAuth(app);
+const db = getFirestore(app);
+const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+
+// --- Constants ---
+const MASTER_PASSWORD = '9329107';
+
+// --- Components ---
+
+// Emotion Selector Data
+const emotions = [
+  { id: 'angry', icon: <Angry size={20} />, label: '화나요', color: 'bg-red-100 text-red-600 border-red-200' },
+  { id: 'sad', icon: <Frown size={20} />, label: '슬퍼요', color: 'bg-blue-100 text-blue-600 border-blue-200' },
+  { id: 'worried', icon: <AlertCircle size={20} />, label: '걱정돼요', color: 'bg-orange-100 text-orange-600 border-orange-200' },
+  { id: 'hopeful', icon: <Smile size={20} />, label: '바뀌길 바래요', color: 'bg-green-100 text-green-600 border-green-200' },
+];
+
+const categories = [
+  '쓰레기/투기', '대기오염', '수질오염', '에너지 낭비', '소음 공해', '기타'
+];
+
+// Helper: Get Emotion Badge
+const getEmotionBadge = (emotionId) => {
+  const emotion = emotions.find(e => e.id === emotionId);
+  if (!emotion) return null;
+  return (
+    <span className={`flex items-center gap-1 px-2 py-1 rounded-full text-xs font-medium border ${emotion.color}`}>
+      {emotion.icon}
+      {emotion.label}
+    </span>
+  );
+};
+
+// --- Password Verification Modal ---
+const PasswordModal = ({ isOpen, onClose, onConfirm, title }) => {
+  const [input, setInput] = useState('');
+
+  if (!isOpen) return null;
+
+  const handleSubmit = (e) => {
+    e.preventDefault();
+    onConfirm(input);
+    setInput('');
+  };
+
+  return (
+    <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
+      <div className="bg-white rounded-xl shadow-lg p-6 w-full max-w-xs animate-fade-in">
+        <h3 className="text-lg font-bold text-gray-800 mb-2">{title}</h3>
+        <p className="text-sm text-gray-500 mb-4">작성할 때 설정한 비밀번호를 입력하세요.</p>
+        <form onSubmit={handleSubmit}>
+          <input
+            type="password"
+            value={input}
+            onChange={(e) => setInput(e.target.value)}
+            className="w-full p-3 border border-gray-300 rounded-lg mb-4 text-center text-lg tracking-widest focus:ring-2 focus:ring-green-500 outline-none"
+            placeholder="비밀번호"
+            autoFocus
+          />
+          <div className="flex gap-2">
+            <button
+              type="button"
+              onClick={() => { setInput(''); onClose(); }}
+              className="flex-1 py-3 bg-gray-100 text-gray-600 rounded-lg font-bold text-sm"
+            >
+              취소
+            </button>
+            <button
+              type="submit"
+              className="flex-1 py-3 bg-green-600 text-white rounded-lg font-bold text-sm"
+            >
+              확인
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+};
+
+// --- PostCard Component ---
+const PostCard = ({ post, user, onLike, onRequestEdit, onRequestDelete }) => {
+  
+  return (
+    <div className="bg-white rounded-xl shadow-sm overflow-hidden border border-gray-100 animate-fade-in-up mb-6">
+      <div className="p-4 flex items-center justify-between border-b border-gray-50">
+        <div className="flex items-center gap-2">
+          <span className="inline-block px-2 py-0.5 rounded bg-gray-100 text-gray-600 text-xs font-bold">
+            {post.category}
+          </span>
+          {post.location && (
+            <div className="flex items-center text-gray-400 text-xs">
+              <MapPin size={12} className="mr-1" />
+              {post.location}
+            </div>
+          )}
+        </div>
+
+        <div className="flex items-center gap-2">
+          <span className="text-xs text-gray-400">
+            {post.createdAt ? new Date(post.createdAt.seconds * 1000).toLocaleDateString() : '방금 전'}
+          </span>
+          {/* Edit/Delete Buttons are now ALWAYS visible to allow password access */}
+          <div className="flex items-center gap-1 pl-2 ml-2 border-l border-gray-200">
+            <button 
+              onClick={() => onRequestEdit(post)}
+              className="p-1.5 text-gray-400 hover:text-green-600 hover:bg-green-50 rounded transition"
+              title="수정 (비밀번호 필요)"
+            >
+              <Edit2 size={14} />
+            </button>
+            <button 
+              onClick={() => onRequestDelete(post)}
+              className="p-1.5 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded transition"
+              title="삭제 (비밀번호 필요)"
+            >
+              <Trash2 size={14} />
+            </button>
+          </div>
+        </div>
+      </div>
+
+      {post.imageUrl ? (
+        <div className="w-full aspect-video bg-gray-100 relative group">
+          <img src={post.imageUrl} alt="Post" className="w-full h-full object-cover" />
+        </div>
+      ) : (
+        <div className="w-full h-32 bg-gray-50 flex items-center justify-center text-gray-400 text-sm italic">
+          사진 없음
+        </div>
+      )}
+
+      <div className="p-4">
+        <div className="flex items-center justify-between mb-3">
+          {getEmotionBadge(post.emotion)}
+        </div>
+        <p className="text-gray-800 text-sm leading-relaxed whitespace-pre-wrap">{post.description}</p>
+      </div>
+
+      <div className="px-4 py-3 bg-gray-50 flex items-center justify-between border-t border-gray-100">
+        <button 
+          onClick={() => onLike(post.id)}
+          className="flex items-center gap-1.5 text-gray-500 hover:text-red-500 transition-colors group"
+        >
+          <Heart size={18} className="group-hover:fill-red-500 group-active:scale-125 transition-transform" />
+          <span className="text-sm font-medium">{post.likes || 0} 공감</span>
+        </button>
+        {/* Comment button removed */}
+      </div>
+    </div>
+  );
+};
+
+
+// --- Main App Component ---
+export default function App() {
+  const [user, setUser] = useState(null);
+  const [posts, setPosts] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [activeTab, setActiveTab] = useState('feed'); 
+
+  // Form State
+  const [editingPostId, setEditingPostId] = useState(null); 
+  const [imagePreview, setImagePreview] = useState(null);
+  const [description, setDescription] = useState('');
+  const [location, setLocation] = useState('');
+  const [selectedEmotion, setSelectedEmotion] = useState(null);
+  const [selectedCategory, setSelectedCategory] = useState('쓰레기/투기');
+  const [postPassword, setPostPassword] = useState(''); // Password for new/editing post
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const fileInputRef = useRef(null);
+
+  // Verification Modal State
+  const [verification, setVerification] = useState({ isOpen: false, post: null, action: null });
+
+  // --- Authentication ---
+  useEffect(() => {
+    const initAuth = async () => {
+      try {
+        if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+          await signInWithCustomToken(auth, __initial_auth_token);
+        } else {
+          await signInAnonymously(auth);
+        }
+      } catch (error) {
+        console.error("Auth Error:", error);
+      }
+    };
+    initAuth();
+    
+    const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
+      setUser(currentUser);
+    });
+    return () => unsubscribe();
+  }, []);
+
+  // --- Real-time Data Fetching ---
+  useEffect(() => {
+    if (!user) return;
+    const q = collection(db, 'artifacts', appId, 'public', 'data', 'green_lens_posts');
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      const loadedPosts = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+      loadedPosts.sort((a, b) => (b.createdAt?.seconds || 0) - (a.createdAt?.seconds || 0));
+      setPosts(loadedPosts);
+      setLoading(false);
+    }, (error) => { console.error(error); setLoading(false); });
+    return () => unsubscribe();
+  }, [user]);
+
+  // --- Image Handling ---
+  const handleImageChange = (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      const img = new Image();
+      img.onload = () => {
+        const canvas = document.createElement('canvas');
+        let width = img.width, height = img.height;
+        const MAX_DIM = 800;
+        if (width > height) {
+          if (width > MAX_DIM) { height *= MAX_DIM / width; width = MAX_DIM; }
+        } else {
+          if (height > MAX_DIM) { width *= MAX_DIM / height; height = MAX_DIM; }
+        }
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext('2d');
+        ctx.drawImage(img, 0, 0, width, height);
+        setImagePreview(canvas.toDataURL('image/jpeg', 0.7));
+      };
+      img.src = event.target.result;
+    };
+    reader.readAsDataURL(file);
+  };
+
+  // --- Form Reset ---
+  const resetForm = () => {
+    setEditingPostId(null);
+    setImagePreview(null);
+    setDescription('');
+    setLocation('');
+    setSelectedEmotion(null);
+    setSelectedCategory('쓰레기/투기');
+    setPostPassword('');
+    if (fileInputRef.current) fileInputRef.current.value = '';
+  };
+
+  // --- Action Requests ---
+  const handleRequestDelete = (post) => {
+    setVerification({ isOpen: true, post: post, action: 'delete' });
+  };
+
+  const handleRequestEdit = (post) => {
+    setVerification({ isOpen: true, post: post, action: 'edit' });
+  };
+
+  // --- Password Verification Logic ---
+  const handleVerification = (inputPassword) => {
+    const { post, action } = verification;
+    
+    // Check Master Password OR Post Password
+    const isMaster = inputPassword === MASTER_PASSWORD;
+    const isCorrect = isMaster || (post.password && inputPassword === post.password);
+
+    if (isCorrect) {
+      if (action === 'delete') {
+        performDelete(post.id);
+      } else if (action === 'edit') {
+        performEditStart(post);
+      }
+      setVerification({ isOpen: false, post: null, action: null });
+    } else {
+      alert("비밀번호가 일치하지 않습니다.");
+    }
+  };
+
+  // --- Perform Actions ---
+  const performDelete = async (postId) => {
+    try {
+      await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'green_lens_posts', postId));
+      if (editingPostId === postId) {
+        resetForm();
+        setActiveTab('feed');
+      }
+    } catch (error) {
+      console.error("Delete error:", error);
+      alert("삭제 실패");
+    }
+  };
+
+  const performEditStart = (post) => {
+    setEditingPostId(post.id);
+    setImagePreview(post.imageUrl);
+    setDescription(post.description);
+    setLocation(post.location);
+    setSelectedEmotion(post.emotion);
+    setSelectedCategory(post.category);
+    // Keep the existing password by default so they don't have to re-enter it to save
+    setPostPassword(post.password || ''); 
+    setActiveTab('write');
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
+
+  // --- Submit Post ---
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    if (!description || !selectedEmotion || !user || !postPassword) return;
+
+    setIsSubmitting(true);
+    try {
+      if (editingPostId) {
+        // UPDATE
+        const postRef = doc(db, 'artifacts', appId, 'public', 'data', 'green_lens_posts', editingPostId);
+        await updateDoc(postRef, {
+          imageUrl: imagePreview,
+          description,
+          location,
+          emotion: selectedEmotion,
+          category: selectedCategory,
+          password: postPassword, // Update password if changed
+          updatedAt: serverTimestamp() 
+        });
+      } else {
+        // CREATE
+        await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'green_lens_posts'), {
+          userId: user.uid,
+          imageUrl: imagePreview,
+          description,
+          location,
+          emotion: selectedEmotion,
+          category: selectedCategory,
+          password: postPassword, // STORE PASSWORD
+          createdAt: serverTimestamp(),
+          likes: 0
+        });
+      }
+      resetForm();
+      setActiveTab('feed');
+    } catch (error) {
+      console.error("Error saving:", error);
+      alert("저장 실패");
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  // --- Like Interaction ---
+  const handleLike = async (postId) => {
+    if (!user) return;
+    try {
+      await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'green_lens_posts', postId), {
+        likes: increment(1)
+      });
+    } catch (error) { console.error("Like error", error); }
+  };
+
+  if (loading) return <div className="flex items-center justify-center h-screen bg-gray-50 text-green-600">로딩 중...</div>;
+
+  return (
+    <div className="min-h-screen bg-gray-100 font-sans pb-20 md:pb-0">
+      <header className="bg-white shadow-sm sticky top-0 z-10">
+        <div className="max-w-md mx-auto px-4 py-4 flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <div className="bg-green-500 p-2 rounded-lg text-white"><Camera size={20} /></div>
+            <h1 className="text-xl font-bold text-gray-800">그린 렌즈</h1>
+          </div>
+        </div>
+      </header>
+
+      <main className="max-w-md mx-auto pt-4 px-4">
+        <div className="flex bg-white rounded-xl p-1 mb-4 shadow-sm">
+          <button 
+            onClick={() => { resetForm(); setActiveTab('feed'); }}
+            className={`flex-1 py-2 rounded-lg text-sm font-medium transition-colors ${activeTab === 'feed' ? 'bg-green-100 text-green-700' : 'text-gray-500 hover:bg-gray-50'}`}
+          >
+            우리들의 이야기
+          </button>
+          <button 
+            onClick={() => setActiveTab('write')}
+            className={`flex-1 py-2 rounded-lg text-sm font-medium transition-colors ${activeTab === 'write' ? 'bg-green-100 text-green-700' : 'text-gray-500 hover:bg-gray-50'}`}
+          >
+            {editingPostId ? '게시물 수정' : '제보하기'}
+          </button>
+        </div>
+
+        {activeTab === 'write' && (
+          <div className="bg-white rounded-xl shadow-sm p-5 animate-fade-in">
+            <div className="flex items-center justify-between mb-4">
+                <h2 className="text-lg font-bold text-gray-800">{editingPostId ? '게시물 수정하기' : '환경 문제 제보하기'}</h2>
+                {editingPostId && (
+                    <button onClick={() => {resetForm(); setActiveTab('feed');}} className="text-xs text-gray-500 hover:text-red-500 flex items-center gap-1 bg-gray-100 px-2 py-1 rounded">
+                        <RotateCcw size={12}/> 취소
+                    </button>
+                )}
+            </div>
+            
+            <form onSubmit={handleSubmit} className="space-y-4">
+              <div 
+                className="relative border-2 border-dashed border-gray-300 rounded-xl aspect-video flex flex-col items-center justify-center bg-gray-50 hover:bg-gray-100 transition cursor-pointer overflow-hidden group"
+                onClick={() => fileInputRef.current?.click()}
+              >
+                {imagePreview ? (
+                  <>
+                    <img src={imagePreview} alt="Preview" className="w-full h-full object-cover" />
+                    <div className="absolute inset-0 bg-black/40 flex items-center justify-center opacity-0 group-hover:opacity-100 transition">
+                      <p className="text-white text-sm font-bold">사진 변경하기</p>
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    <ImageIcon className="text-gray-400 mb-2" size={32} />
+                    <p className="text-gray-500 text-sm font-medium">사진을 올려주세요</p>
+                  </>
+                )}
+                <input type="file" ref={fileInputRef} className="hidden" accept="image/*" onChange={handleImageChange} />
+              </div>
+
+              {/* Password Input for Creation */}
+              <div>
+                <label className="block text-sm font-bold text-gray-700 mb-1 flex items-center gap-1">
+                  <Lock size={14} className="text-green-600"/> 게시물 비밀번호 (필수)
+                </label>
+                <input 
+                  type="password" 
+                  value={postPassword}
+                  onChange={(e) => setPostPassword(e.target.value)}
+                  placeholder="수정/삭제 시 필요합니다 (4자리 이상 권장)"
+                  className="w-full p-3 rounded-lg border border-gray-200 bg-white focus:ring-2 focus:ring-green-500 outline-none text-sm"
+                  required
+                />
+              </div>
+
+              <div className="grid grid-cols-2 gap-4">
+                 <div>
+                    <label className="block text-sm font-bold text-gray-700 mb-1">카테고리</label>
+                    <select value={selectedCategory} onChange={(e) => setSelectedCategory(e.target.value)} className="w-full p-3 rounded-lg border border-gray-200 bg-white focus:ring-2 focus:ring-green-500 outline-none text-sm">
+                      {categories.map(cat => <option key={cat} value={cat}>{cat}</option>)}
+                    </select>
+                 </div>
+                 <div>
+                    <label className="block text-sm font-bold text-gray-700 mb-1">장소</label>
+                    <input type="text" value={location} onChange={(e) => setLocation(e.target.value)} placeholder="장소 입력" className="w-full p-3 rounded-lg border border-gray-200 outline-none text-sm" />
+                 </div>
+              </div>
+
+              <div>
+                <label className="block text-sm font-bold text-gray-700 mb-2">어떤 생각이 들었나요?</label>
+                <div className="grid grid-cols-2 gap-2">
+                  {emotions.map((emo) => (
+                    <button key={emo.id} type="button" onClick={() => setSelectedEmotion(emo.id)} className={`p-3 rounded-lg border flex items-center justify-center gap-2 transition-all ${selectedEmotion === emo.id ? `${emo.color} border-current ring-1 ring-current shadow-sm` : 'bg-white border-gray-200 text-gray-500 hover:bg-gray-50'}`}>
+                      {emo.icon} <span className="text-sm font-medium">{emo.label}</span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-sm font-bold text-gray-700 mb-1">내용</label>
+                <textarea value={description} onChange={(e) => setDescription(e.target.value)} placeholder="내용을 입력하세요" className="w-full p-3 rounded-lg border border-gray-200 h-24 resize-none outline-none focus:ring-2 focus:ring-green-500 text-sm" />
+              </div>
+
+              <button type="submit" disabled={isSubmitting || !description || !selectedEmotion || !postPassword} className={`w-full py-4 rounded-xl font-bold text-white shadow-md flex items-center justify-center gap-2 transition-all ${isSubmitting || !description || !selectedEmotion || !postPassword ? 'bg-gray-300 cursor-not-allowed' : 'bg-green-600 hover:bg-green-700 active:scale-95'}`}>
+                {isSubmitting ? '저장 중...' : (editingPostId ? '수정 완료' : '공유하기')} <Send size={18} />
+              </button>
+            </form>
+          </div>
+        )}
+
+        {activeTab === 'feed' && (
+          <div className="space-y-6">
+            {posts.length === 0 ? (
+              <div className="text-center py-20">
+                <div className="inline-block p-4 rounded-full bg-green-50 text-green-500 mb-4"><Camera size={40} /></div>
+                <h3 className="text-lg font-bold text-gray-700">게시물이 없습니다</h3>
+                <button onClick={() => setActiveTab('write')} className="mt-6 px-6 py-2 bg-green-600 text-white rounded-full text-sm font-medium hover:bg-green-700 transition">첫 제보하기</button>
+              </div>
+            ) : (
+              posts.map((post) => (
+                <PostCard 
+                  key={post.id} 
+                  post={post} 
+                  user={user} 
+                  onLike={handleLike} 
+                  onRequestEdit={handleRequestEdit} 
+                  onRequestDelete={handleRequestDelete} 
+                />
+              ))
+            )}
+          </div>
+        )}
+      </main>
+      
+      {/* Password Modal */}
+      <PasswordModal 
+        isOpen={verification.isOpen} 
+        onClose={() => setVerification({ isOpen: false, post: null, action: null })} 
+        onConfirm={handleVerification}
+        title={verification.action === 'delete' ? '게시물 삭제' : '게시물 수정'}
+      />
+
+      <style>{`
+        @keyframes fade-in { from { opacity: 0; } to { opacity: 1; } }
+        @keyframes fade-in-up { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+        .animate-fade-in { animation: fade-in 0.3s ease-out; }
+        .animate-fade-in-up { animation: fade-in-up 0.4s ease-out; }
+        .custom-scrollbar::-webkit-scrollbar { width: 4px; }
+        .custom-scrollbar::-webkit-scrollbar-track { background: #f1f1f1; }
+        .custom-scrollbar::-webkit-scrollbar-thumb { background: #d1d5db; border-radius: 2px; }
+      `}</style>
+    </div>
+  );
+}
