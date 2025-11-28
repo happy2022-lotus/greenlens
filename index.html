@@ -1,601 +1,452 @@
-import React, { useState, useEffect, useRef } from 'react';
-import { Camera, MapPin, Heart, Send, Image as ImageIcon, X, AlertCircle, Smile, Frown, Meh, Angry, Trash2, Edit2, RotateCcw, Lock, LogIn, LogOut } from 'lucide-react';
-import { initializeApp } from 'firebase/app';
-import { getAnalytics } from "firebase/analytics"; // Analytics 추가
-import { getAuth, GoogleAuthProvider, signInWithPopup, signOut, onAuthStateChanged, signInWithCustomToken } from 'firebase/auth';
-import { getFirestore, collection, addDoc, onSnapshot, query, orderBy, serverTimestamp, doc, updateDoc, increment, deleteDoc } from 'firebase/firestore';
-
-// --- 사용자 제공 Firebase 설정 ---
-const firebaseConfig = {
-  apiKey: "AIzaSyAhByjkWhWUpeGxe7bORit7X29q14aRzhM",
-  authDomain: "greenlens-2da0a.firebaseapp.com",
-  projectId: "greenlens-2da0a",
-  storageBucket: "greenlens-2da0a.firebasestorage.app",
-  messagingSenderId: "991557182394",
-  appId: "1:991557182394:web:52bfd17d0b9ff31234b383",
-  measurementId: "G-TSK7ELSPND"
-};
-
-// --- Firebase 초기화 ---
-const app = initializeApp(firebaseConfig);
-const analytics = getAnalytics(app); // Analytics 초기화
-const auth = getAuth(app);
-const db = getFirestore(app);
-
-// --- 상수 ---
-const MASTER_PASSWORD = '9329107';
-
-// --- 컴포넌트 ---
-
-const emotions = [
-  { id: 'angry', icon: <Angry size={20} />, label: '화나요', color: 'bg-red-100 text-red-600 border-red-200' },
-  { id: 'sad', icon: <Frown size={20} />, label: '슬퍼요', color: 'bg-blue-100 text-blue-600 border-blue-200' },
-  { id: 'worried', icon: <AlertCircle size={20} />, label: '걱정돼요', color: 'bg-orange-100 text-orange-600 border-orange-200' },
-  { id: 'hopeful', icon: <Smile size={20} />, label: '바뀌길 바래요', color: 'bg-green-100 text-green-600 border-green-200' },
-];
-
-const categories = [
-  '쓰레기/투기', '대기오염', '수질오염', '에너지 낭비', '소음 공해', '기타'
-];
-
-// 감정 뱃지 헬퍼
-const getEmotionBadge = (emotionId) => {
-  const emotion = emotions.find(e => e.id === emotionId);
-  if (!emotion) return null;
-  return (
-    <span className={`flex items-center gap-1 px-2 py-1 rounded-full text-xs font-medium border ${emotion.color}`}>
-      {emotion.icon}
-      {emotion.label}
-    </span>
-  );
-};
-
-// --- 로그인 화면 컴포넌트 ---
-const LoginScreen = ({ onLogin }) => {
-  return (
-    <div className="min-h-screen bg-green-50 flex flex-col items-center justify-center p-4">
-      <div className="bg-white p-8 rounded-2xl shadow-lg max-w-sm w-full text-center space-y-6 animate-fade-in-up">
-        <div className="bg-green-100 p-4 rounded-full inline-block mb-2">
-          <Camera size={48} className="text-green-600" />
-        </div>
-        <div>
-          <h1 className="text-2xl font-bold text-gray-800 mb-2">그린 렌즈</h1>
-          <p className="text-gray-500 text-sm">우리 동네 환경 지킴이</p>
-        </div>
-        <div className="space-y-3">
-          <button 
-            onClick={onLogin}
-            className="w-full py-3 px-4 bg-white border border-gray-300 rounded-lg shadow-sm hover:bg-gray-50 flex items-center justify-center gap-2 transition-all group"
-          >
-            <img src="https://www.gstatic.com/firebasejs/ui/2.0.0/images/auth/google.svg" alt="Google" className="w-5 h-5" />
-            <span className="text-gray-700 font-medium group-hover:text-black">구글 계정으로 시작하기</span>
-          </button>
-        </div>
-        <p className="text-xs text-gray-400 mt-4">
-          로그인하면 환경 문제 제보와<br/>공유 활동에 참여할 수 있습니다.
-        </p>
-      </div>
-    </div>
-  );
-};
-
-// --- 비밀번호 확인 모달 ---
-const PasswordModal = ({ isOpen, onClose, onConfirm, title }) => {
-  const [input, setInput] = useState('');
-
-  if (!isOpen) return null;
-
-  const handleSubmit = (e) => {
-    e.preventDefault();
-    onConfirm(input);
-    setInput('');
-  };
-
-  return (
-    <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
-      <div className="bg-white rounded-xl shadow-lg p-6 w-full max-w-xs animate-fade-in">
-        <h3 className="text-lg font-bold text-gray-800 mb-2">{title}</h3>
-        <p className="text-sm text-gray-500 mb-4">게시물 비밀번호를 입력하세요.</p>
-        <form onSubmit={handleSubmit}>
-          <input
-            type="password"
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            className="w-full p-3 border border-gray-300 rounded-lg mb-4 text-center text-lg tracking-widest focus:ring-2 focus:ring-green-500 outline-none"
-            placeholder="비밀번호"
-            autoFocus
-          />
-          <div className="flex gap-2">
-            <button
-              type="button"
-              onClick={() => { setInput(''); onClose(); }}
-              className="flex-1 py-3 bg-gray-100 text-gray-600 rounded-lg font-bold text-sm"
-            >
-              취소
-            </button>
-            <button
-              type="submit"
-              className="flex-1 py-3 bg-green-600 text-white rounded-lg font-bold text-sm"
-            >
-              확인
-            </button>
-          </div>
-        </form>
-      </div>
-    </div>
-  );
-};
-
-// --- 포스트 카드 컴포넌트 ---
-const PostCard = ({ post, user, onLike, onRequestEdit, onRequestDelete }) => {
-  // 작성자 확인: 사용자 ID가 같거나 비밀번호를 아는 경우
-  const isOwner = user && post.userId === user.uid;
-
-  return (
-    <div className="bg-white rounded-xl shadow-sm overflow-hidden border border-gray-100 animate-fade-in-up mb-6">
-      <div className="p-4 flex items-center justify-between border-b border-gray-50">
-        <div className="flex items-center gap-2">
-          <span className="inline-block px-2 py-0.5 rounded bg-gray-100 text-gray-600 text-xs font-bold">
-            {post.category}
-          </span>
-          {post.location && (
-            <div className="flex items-center text-gray-400 text-xs">
-              <MapPin size={12} className="mr-1" />
-              {post.location}
-            </div>
-          )}
-        </div>
-
-        <div className="flex items-center gap-2">
-          <span className="text-xs text-gray-400">
-            {post.createdAt ? new Date(post.createdAt.seconds * 1000).toLocaleDateString() : '방금 전'}
-          </span>
-          
-          <div className="flex items-center gap-1 pl-2 ml-2 border-l border-gray-200">
-            <button 
-              onClick={() => onRequestEdit(post)}
-              className={`p-1.5 rounded transition ${isOwner ? 'text-green-500 hover:bg-green-50' : 'text-gray-300 hover:text-green-600 hover:bg-green-50'}`}
-              title="수정"
-            >
-              <Edit2 size={14} />
-            </button>
-            <button 
-              onClick={() => onRequestDelete(post)}
-              className={`p-1.5 rounded transition ${isOwner ? 'text-red-400 hover:bg-red-50' : 'text-gray-300 hover:text-red-600 hover:bg-red-50'}`}
-              title="삭제"
-            >
-              <Trash2 size={14} />
-            </button>
-          </div>
-        </div>
-      </div>
-
-      {post.imageUrl ? (
-        <div className="w-full aspect-video bg-gray-100 relative group">
-          <img src={post.imageUrl} alt="Post" className="w-full h-full object-cover" />
-        </div>
-      ) : (
-        <div className="w-full h-32 bg-gray-50 flex items-center justify-center text-gray-400 text-sm italic">
-          사진 없음
-        </div>
-      )}
-
-      <div className="p-4">
-        <div className="flex items-center justify-between mb-3">
-          {getEmotionBadge(post.emotion)}
-        </div>
-        <p className="text-gray-800 text-sm leading-relaxed whitespace-pre-wrap">{post.description}</p>
-      </div>
-
-      <div className="px-4 py-3 bg-gray-50 flex items-center justify-between border-t border-gray-100">
-        <button 
-          onClick={() => onLike(post.id)}
-          className="flex items-center gap-1.5 text-gray-500 hover:text-red-500 transition-colors group"
-        >
-          <Heart size={18} className="group-hover:fill-red-500 group-active:scale-125 transition-transform" />
-          <span className="text-sm font-medium">{post.likes || 0} 공감</span>
-        </button>
-      </div>
-    </div>
-  );
-};
-
-
-// --- 메인 앱 컴포넌트 ---
-export default function App() {
-  const [user, setUser] = useState(null);
-  const [posts, setPosts] = useState([]);
-  const [loading, setLoading] = useState(true);
-  const [activeTab, setActiveTab] = useState('feed'); 
-
-  // 폼 상태
-  const [editingPostId, setEditingPostId] = useState(null); 
-  const [imagePreview, setImagePreview] = useState(null);
-  const [description, setDescription] = useState('');
-  const [location, setLocation] = useState('');
-  const [selectedEmotion, setSelectedEmotion] = useState(null);
-  const [selectedCategory, setSelectedCategory] = useState('쓰레기/투기');
-  const [postPassword, setPostPassword] = useState(''); 
-  const [isSubmitting, setIsSubmitting] = useState(false);
-  const fileInputRef = useRef(null);
-
-  // 인증 모달 상태
-  const [verification, setVerification] = useState({ isOpen: false, post: null, action: null });
-
-  // --- 인증 및 로그인 ---
-  useEffect(() => {
-    // 기존 환경(이곳의 미리보기) 호환을 위한 커스텀 토큰 처리
-    const initAuth = async () => {
-      if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
-        try {
-          await signInWithCustomToken(auth, __initial_auth_token);
-        } catch (e) {
-          console.error("Custom token login failed", e);
-        }
-      }
-    };
-    initAuth();
-
-    // 인증 상태 감지
-    const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
-      setUser(currentUser);
-      setLoading(false);
-    });
-    return () => unsubscribe();
-  }, []);
-
-  const handleGoogleLogin = async () => {
-    const provider = new GoogleAuthProvider();
-    try {
-      await signInWithPopup(auth, provider);
-    } catch (error) {
-      console.error("Login Failed:", error);
-      alert("로그인에 실패했습니다. (미리보기 환경에서는 팝업이 차단될 수 있습니다)");
-    }
-  };
-
-  const handleLogout = async () => {
-    if(window.confirm("로그아웃 하시겠습니까?")) {
-        try {
-            await signOut(auth);
-            setActiveTab('feed');
-        } catch (error) {
-            console.error("Logout Failed:", error);
-        }
-    }
-  };
-
-  // --- 데이터 불러오기 (Real-time) ---
-  useEffect(() => {
-    // 사용자 DB의 'posts' 컬렉션 사용
-    const q = collection(db, 'posts');
-    const unsubscribe = onSnapshot(q, (snapshot) => {
-      const loadedPosts = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-      // 최신순 정렬
-      loadedPosts.sort((a, b) => (b.createdAt?.seconds || 0) - (a.createdAt?.seconds || 0));
-      setPosts(loadedPosts);
-    }, (error) => { console.error(error); });
-    return () => unsubscribe();
-  }, [user]); // user 의존성은 유지하되 로그인 전에도 데이터는 볼 수 있게 할 수 있으나, 현재 구조상 로그인이 되어야 메인화면 진입
-
-  // --- 이미지 처리 ---
-  const handleImageChange = (e) => {
-    const file = e.target.files[0];
-    if (!file) return;
-    const reader = new FileReader();
-    reader.onload = (event) => {
-      const img = new Image();
-      img.onload = () => {
-        const canvas = document.createElement('canvas');
-        let width = img.width, height = img.height;
-        const MAX_DIM = 800;
-        if (width > height) {
-          if (width > MAX_DIM) { height *= MAX_DIM / width; width = MAX_DIM; }
-        } else {
-          if (height > MAX_DIM) { width *= MAX_DIM / height; height = MAX_DIM; }
-        }
-        canvas.width = width;
-        canvas.height = height;
-        const ctx = canvas.getContext('2d');
-        ctx.drawImage(img, 0, 0, width, height);
-        setImagePreview(canvas.toDataURL('image/jpeg', 0.7));
-      };
-      img.src = event.target.result;
-    };
-    reader.readAsDataURL(file);
-  };
-
-  // --- 폼 초기화 ---
-  const resetForm = () => {
-    setEditingPostId(null);
-    setImagePreview(null);
-    setDescription('');
-    setLocation('');
-    setSelectedEmotion(null);
-    setSelectedCategory('쓰레기/투기');
-    setPostPassword('');
-    if (fileInputRef.current) fileInputRef.current.value = '';
-  };
-
-  // --- 수정/삭제 요청 처리 ---
-  const handleRequestDelete = (post) => {
-    // 본인이 쓴 글이면 바로 삭제 확인, 아니면 비밀번호 입력
-    if (user && post.userId === user.uid) {
-        if(window.confirm("내가 작성한 글입니다. 정말 삭제하시겠습니까?")) {
-            performDelete(post.id);
-        }
-    } else {
-        setVerification({ isOpen: true, post: post, action: 'delete' });
-    }
-  };
-
-  const handleRequestEdit = (post) => {
-    if (user && post.userId === user.uid) {
-        performEditStart(post);
-    } else {
-        setVerification({ isOpen: true, post: post, action: 'edit' });
-    }
-  };
-
-  // --- 비밀번호 검증 ---
-  const handleVerification = (inputPassword) => {
-    const { post, action } = verification;
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>우리 동네 그린 렌즈</title>
     
-    // 마스터 비밀번호 또는 게시물 비밀번호 확인
-    const isMaster = inputPassword === MASTER_PASSWORD;
-    const isCorrect = isMaster || (post.password && inputPassword === post.password);
-
-    if (isCorrect) {
-      if (action === 'delete') {
-        performDelete(post.id);
-      } else if (action === 'edit') {
-        performEditStart(post);
+    <!-- 1. Tailwind CSS (디자인 도구) 불러오기 -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    
+    <!-- 2. 리액트와 파이어베이스를 브라우저가 이해하도록 돕는 도구들 -->
+    <script async src="https://unpkg.com/es-module-shims@1.8.0/dist/es-module-shims.js"></script>
+    
+    <!-- 3. 사용할 라이브러리 주소록 (Import Map) -->
+    <script type="importmap">
+    {
+      "imports": {
+        "react": "https://esm.sh/react@18.2.0",
+        "react-dom/client": "https://esm.sh/react-dom@18.2.0/client",
+        "lucide-react": "https://esm.sh/lucide-react@0.292.0",
+        "firebase/app": "https://www.gstatic.com/firebasejs/10.7.1/firebase-app.js",
+        "firebase/auth": "https://www.gstatic.com/firebasejs/10.7.1/firebase-auth.js",
+        "firebase/firestore": "https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore.js",
+        "firebase/analytics": "https://www.gstatic.com/firebasejs/10.7.1/firebase-analytics.js"
       }
-      setVerification({ isOpen: false, post: null, action: null });
-    } else {
-      alert("비밀번호가 일치하지 않습니다.");
     }
-  };
+    </script>
 
-  // --- 실제 동작 함수 (DB 처리) ---
-  const performDelete = async (postId) => {
-    try {
-      // 'posts' 컬렉션 사용
-      await deleteDoc(doc(db, 'posts', postId));
-      if (editingPostId === postId) {
-        resetForm();
-        setActiveTab('feed');
-      }
-    } catch (error) {
-      console.error("Delete error:", error);
-      alert("삭제 실패");
-    }
-  };
-
-  const performEditStart = (post) => {
-    setEditingPostId(post.id);
-    setImagePreview(post.imageUrl);
-    setDescription(post.description);
-    setLocation(post.location);
-    setSelectedEmotion(post.emotion);
-    setSelectedCategory(post.category);
-    setPostPassword(post.password || ''); 
-    setActiveTab('write');
-    window.scrollTo({ top: 0, behavior: 'smooth' });
-  };
-
-  // --- 게시물 저장 (생성/수정) ---
-  const handleSubmit = async (e) => {
-    e.preventDefault();
-    if (!description || !selectedEmotion || !user || !postPassword) return;
-
-    setIsSubmitting(true);
-    try {
-      if (editingPostId) {
-        // 수정 (Update)
-        const postRef = doc(db, 'posts', editingPostId);
-        await updateDoc(postRef, {
-          imageUrl: imagePreview,
-          description,
-          location,
-          emotion: selectedEmotion,
-          category: selectedCategory,
-          password: postPassword,
-          updatedAt: serverTimestamp() 
-        });
-      } else {
-        // 생성 (Create)
-        await addDoc(collection(db, 'posts'), {
-          userId: user.uid,
-          imageUrl: imagePreview,
-          description,
-          location,
-          emotion: selectedEmotion,
-          category: selectedCategory,
-          password: postPassword,
-          createdAt: serverTimestamp(),
-          likes: 0
-        });
-      }
-      resetForm();
-      setActiveTab('feed');
-    } catch (error) {
-      console.error("Error saving:", error);
-      alert("저장 실패");
-    } finally {
-      setIsSubmitting(false);
-    }
-  };
-
-  // --- 좋아요 기능 ---
-  const handleLike = async (postId) => {
-    if (!user) return;
-    try {
-      await updateDoc(doc(db, 'posts', postId), {
-        likes: increment(1)
-      });
-    } catch (error) { console.error("Like error", error); }
-  };
-
-  // --- 렌더링 ---
-
-  if (loading) return <div className="flex items-center justify-center h-screen bg-gray-50 text-green-600">로딩 중...</div>;
-
-  // 로그인 안 된 상태면 로그인 화면 표시
-  if (!user) {
-    return <LoginScreen onLogin={handleGoogleLogin} />;
-  }
-
-  return (
-    <div className="min-h-screen bg-gray-100 font-sans pb-20 md:pb-0">
-      <header className="bg-white shadow-sm sticky top-0 z-10">
-        <div className="max-w-md mx-auto px-4 py-4 flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <div className="bg-green-500 p-2 rounded-lg text-white"><Camera size={20} /></div>
-            <h1 className="text-xl font-bold text-gray-800">그린 렌즈</h1>
-          </div>
-          <button onClick={handleLogout} className="text-gray-400 hover:text-gray-600 flex items-center gap-1 text-xs">
-            <LogOut size={14}/> 로그아웃
-          </button>
-        </div>
-      </header>
-
-      <main className="max-w-md mx-auto pt-4 px-4">
-        <div className="flex bg-white rounded-xl p-1 mb-4 shadow-sm">
-          <button 
-            onClick={() => { resetForm(); setActiveTab('feed'); }}
-            className={`flex-1 py-2 rounded-lg text-sm font-medium transition-colors ${activeTab === 'feed' ? 'bg-green-100 text-green-700' : 'text-gray-500 hover:bg-gray-50'}`}
-          >
-            우리들의 이야기
-          </button>
-          <button 
-            onClick={() => setActiveTab('write')}
-            className={`flex-1 py-2 rounded-lg text-sm font-medium transition-colors ${activeTab === 'write' ? 'bg-green-100 text-green-700' : 'text-gray-500 hover:bg-gray-50'}`}
-          >
-            {editingPostId ? '게시물 수정' : '제보하기'}
-          </button>
-        </div>
-
-        {activeTab === 'write' && (
-          <div className="bg-white rounded-xl shadow-sm p-5 animate-fade-in">
-            <div className="flex items-center justify-between mb-4">
-                <h2 className="text-lg font-bold text-gray-800">{editingPostId ? '게시물 수정하기' : '환경 문제 제보하기'}</h2>
-                {editingPostId && (
-                    <button onClick={() => {resetForm(); setActiveTab('feed');}} className="text-xs text-gray-500 hover:text-red-500 flex items-center gap-1 bg-gray-100 px-2 py-1 rounded">
-                        <RotateCcw size={12}/> 취소
-                    </button>
-                )}
-            </div>
-            
-            <form onSubmit={handleSubmit} className="space-y-4">
-              <div 
-                className="relative border-2 border-dashed border-gray-300 rounded-xl aspect-video flex flex-col items-center justify-center bg-gray-50 hover:bg-gray-100 transition cursor-pointer overflow-hidden group"
-                onClick={() => fileInputRef.current?.click()}
-              >
-                {imagePreview ? (
-                  <>
-                    <img src={imagePreview} alt="Preview" className="w-full h-full object-cover" />
-                    <div className="absolute inset-0 bg-black/40 flex items-center justify-center opacity-0 group-hover:opacity-100 transition">
-                      <p className="text-white text-sm font-bold">사진 변경하기</p>
-                    </div>
-                  </>
-                ) : (
-                  <>
-                    <ImageIcon className="text-gray-400 mb-2" size={32} />
-                    <p className="text-gray-500 text-sm font-medium">사진을 올려주세요</p>
-                  </>
-                )}
-                <input type="file" ref={fileInputRef} className="hidden" accept="image/*" onChange={handleImageChange} />
-              </div>
-
-              <div>
-                <label className="block text-sm font-bold text-gray-700 mb-1 flex items-center gap-1">
-                  <Lock size={14} className="text-green-600"/> 게시물 비밀번호 (필수)
-                </label>
-                <input 
-                  type="password" 
-                  value={postPassword}
-                  onChange={(e) => setPostPassword(e.target.value)}
-                  placeholder="관리용 비밀번호 (4자리 이상)"
-                  className="w-full p-3 rounded-lg border border-gray-200 bg-white focus:ring-2 focus:ring-green-500 outline-none text-sm"
-                  required
-                />
-              </div>
-
-              <div className="grid grid-cols-2 gap-4">
-                 <div>
-                    <label className="block text-sm font-bold text-gray-700 mb-1">카테고리</label>
-                    <select value={selectedCategory} onChange={(e) => setSelectedCategory(e.target.value)} className="w-full p-3 rounded-lg border border-gray-200 bg-white focus:ring-2 focus:ring-green-500 outline-none text-sm">
-                      {categories.map(cat => <option key={cat} value={cat}>{cat}</option>)}
-                    </select>
-                 </div>
-                 <div>
-                    <label className="block text-sm font-bold text-gray-700 mb-1">장소</label>
-                    <input type="text" value={location} onChange={(e) => setLocation(e.target.value)} placeholder="장소 입력" className="w-full p-3 rounded-lg border border-gray-200 outline-none text-sm" />
-                 </div>
-              </div>
-
-              <div>
-                <label className="block text-sm font-bold text-gray-700 mb-2">어떤 생각이 들었나요?</label>
-                <div className="grid grid-cols-2 gap-2">
-                  {emotions.map((emo) => (
-                    <button key={emo.id} type="button" onClick={() => setSelectedEmotion(emo.id)} className={`p-3 rounded-lg border flex items-center justify-center gap-2 transition-all ${selectedEmotion === emo.id ? `${emo.color} border-current ring-1 ring-current shadow-sm` : 'bg-white border-gray-200 text-gray-500 hover:bg-gray-50'}`}>
-                      {emo.icon} <span className="text-sm font-medium">{emo.label}</span>
-                    </button>
-                  ))}
-                </div>
-              </div>
-
-              <div>
-                <label className="block text-sm font-bold text-gray-700 mb-1">내용</label>
-                <textarea value={description} onChange={(e) => setDescription(e.target.value)} placeholder="내용을 입력하세요" className="w-full p-3 rounded-lg border border-gray-200 h-24 resize-none outline-none focus:ring-2 focus:ring-green-500 text-sm" />
-              </div>
-
-              <button type="submit" disabled={isSubmitting || !description || !selectedEmotion || !postPassword} className={`w-full py-4 rounded-xl font-bold text-white shadow-md flex items-center justify-center gap-2 transition-all ${isSubmitting || !description || !selectedEmotion || !postPassword ? 'bg-gray-300 cursor-not-allowed' : 'bg-green-600 hover:bg-green-700 active:scale-95'}`}>
-                {isSubmitting ? '저장 중...' : (editingPostId ? '수정 완료' : '공유하기')} <Send size={18} />
-              </button>
-            </form>
-          </div>
-        )}
-
-        {activeTab === 'feed' && (
-          <div className="space-y-6">
-            {posts.length === 0 ? (
-              <div className="text-center py-20">
-                <div className="inline-block p-4 rounded-full bg-green-50 text-green-500 mb-4"><Camera size={40} /></div>
-                <h3 className="text-lg font-bold text-gray-700">게시물이 없습니다</h3>
-                <button onClick={() => setActiveTab('write')} className="mt-6 px-6 py-2 bg-green-600 text-white rounded-full text-sm font-medium hover:bg-green-700 transition">첫 제보하기</button>
-              </div>
-            ) : (
-              posts.map((post) => (
-                <PostCard 
-                  key={post.id} 
-                  post={post} 
-                  user={user} 
-                  onLike={handleLike} 
-                  onRequestEdit={handleRequestEdit} 
-                  onRequestDelete={handleRequestDelete} 
-                />
-              ))
-            )}
-          </div>
-        )}
-      </main>
-      
-      {/* Password Modal */}
-      <PasswordModal 
-        isOpen={verification.isOpen} 
-        onClose={() => setVerification({ isOpen: false, post: null, action: null })} 
-        onConfirm={handleVerification}
-        title={verification.action === 'delete' ? '게시물 삭제' : '게시물 수정'}
-      />
-
-      <style>{`
+    <!-- 4. Babel (리액트 코드를 브라우저용으로 번역해주는 도구) -->
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    
+    <style>
         @keyframes fade-in { from { opacity: 0; } to { opacity: 1; } }
         @keyframes fade-in-up { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
         .animate-fade-in { animation: fade-in 0.3s ease-out; }
         .animate-fade-in-up { animation: fade-in-up 0.4s ease-out; }
-      `}</style>
-    </div>
-  );
-}
+        
+        /* 모바일 최적화 스타일 */
+        body { -webkit-tap-highlight-color: transparent; }
+        input, textarea, select { font-size: 16px; } /* 아이폰 확대 방지 */
+    </style>
+</head>
+<body class="bg-gray-100 font-sans pb-20 md:pb-0">
+    <div id="root"></div>
+
+    <!-- 5. 실제 앱 코드 (리액트) -->
+    <script type="text/babel" data-type="module">
+        import React, { useState, useEffect, useRef } from 'react';
+        import { createRoot } from 'react-dom/client';
+        import { Camera, MapPin, Heart, Send, Image as ImageIcon, X, AlertCircle, Smile, Frown, Meh, Angry, Trash2, Edit2, RotateCcw, Lock, LogIn, LogOut } from 'lucide-react';
+        import { initializeApp } from 'firebase/app';
+        import { getAnalytics } from "firebase/analytics";
+        import { getAuth, GoogleAuthProvider, signInWithPopup, signOut, onAuthStateChanged, signInWithCustomToken } from 'firebase/auth';
+        import { getFirestore, collection, addDoc, onSnapshot, query, orderBy, serverTimestamp, doc, updateDoc, increment, deleteDoc } from 'firebase/firestore';
+
+        // --- 사용자 제공 Firebase 설정 (여기에 본인 키 입력됨) ---
+        const firebaseConfig = {
+          apiKey: "AIzaSyAhByjkWhWUpeGxe7bORit7X29q14aRzhM",
+          authDomain: "greenlens-2da0a.firebaseapp.com",
+          projectId: "greenlens-2da0a",
+          storageBucket: "greenlens-2da0a.firebasestorage.app",
+          messagingSenderId: "991557182394",
+          appId: "1:991557182394:web:52bfd17d0b9ff31234b383",
+          measurementId: "G-TSK7ELSPND"
+        };
+
+        // --- Firebase 초기화 ---
+        const app = initializeApp(firebaseConfig);
+        const analytics = getAnalytics(app);
+        const auth = getAuth(app);
+        const db = getFirestore(app);
+
+        // --- 상수 ---
+        const MASTER_PASSWORD = '9329107';
+
+        // --- 데이터 ---
+        const emotions = [
+            { id: 'angry', icon: <Angry size={20} />, label: '화나요', color: 'bg-red-100 text-red-600 border-red-200' },
+            { id: 'sad', icon: <Frown size={20} />, label: '슬퍼요', color: 'bg-blue-100 text-blue-600 border-blue-200' },
+            { id: 'worried', icon: <AlertCircle size={20} />, label: '걱정돼요', color: 'bg-orange-100 text-orange-600 border-orange-200' },
+            { id: 'hopeful', icon: <Smile size={20} />, label: '바뀌길 바래요', color: 'bg-green-100 text-green-600 border-green-200' },
+        ];
+
+        const categories = [
+            '쓰레기/투기', '대기오염', '수질오염', '에너지 낭비', '소음 공해', '기타'
+        ];
+
+        // --- 컴포넌트: 감정 뱃지 ---
+        const getEmotionBadge = (emotionId) => {
+            const emotion = emotions.find(e => e.id === emotionId);
+            if (!emotion) return null;
+            return (
+                <span className={`flex items-center gap-1 px-2 py-1 rounded-full text-xs font-medium border ${emotion.color}`}>
+                    {emotion.icon}
+                    {emotion.label}
+                </span>
+            );
+        };
+
+        // --- 컴포넌트: 로그인 화면 ---
+        const LoginScreen = ({ onLogin }) => {
+            return (
+                <div className="min-h-screen bg-green-50 flex flex-col items-center justify-center p-4">
+                    <div className="bg-white p-8 rounded-2xl shadow-lg max-w-sm w-full text-center space-y-6 animate-fade-in-up">
+                        <div className="bg-green-100 p-4 rounded-full inline-block mb-2">
+                            <Camera size={48} className="text-green-600" />
+                        </div>
+                        <div>
+                            <h1 className="text-2xl font-bold text-gray-800 mb-2">그린 렌즈</h1>
+                            <p className="text-gray-500 text-sm">우리 동네 환경 지킴이</p>
+                        </div>
+                        <div className="space-y-3">
+                            <button 
+                                onClick={onLogin}
+                                className="w-full py-3 px-4 bg-white border border-gray-300 rounded-lg shadow-sm hover:bg-gray-50 flex items-center justify-center gap-2 transition-all group"
+                            >
+                                <img src="https://www.gstatic.com/firebasejs/ui/2.0.0/images/auth/google.svg" alt="Google" className="w-5 h-5" />
+                                <span className="text-gray-700 font-medium group-hover:text-black">구글 계정으로 시작하기</span>
+                            </button>
+                        </div>
+                        <p className="text-xs text-gray-400 mt-4">
+                            로그인하면 환경 문제 제보와<br/>공유 활동에 참여할 수 있습니다.
+                        </p>
+                    </div>
+                </div>
+            );
+        };
+
+        // --- 컴포넌트: 비밀번호 모달 ---
+        const PasswordModal = ({ isOpen, onClose, onConfirm, title }) => {
+            const [input, setInput] = useState('');
+
+            if (!isOpen) return null;
+
+            const handleSubmit = (e) => {
+                e.preventDefault();
+                onConfirm(input);
+                setInput('');
+            };
+
+            return (
+                <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
+                    <div className="bg-white rounded-xl shadow-lg p-6 w-full max-w-xs animate-fade-in">
+                        <h3 className="text-lg font-bold text-gray-800 mb-2">{title}</h3>
+                        <p className="text-sm text-gray-500 mb-4">게시물 비밀번호를 입력하세요.</p>
+                        <form onSubmit={handleSubmit}>
+                            <input
+                                type="password"
+                                value={input}
+                                onChange={(e) => setInput(e.target.value)}
+                                className="w-full p-3 border border-gray-300 rounded-lg mb-4 text-center text-lg tracking-widest focus:ring-2 focus:ring-green-500 outline-none"
+                                placeholder="비밀번호"
+                                autoFocus
+                            />
+                            <div className="flex gap-2">
+                                <button type="button" onClick={() => { setInput(''); onClose(); }} className="flex-1 py-3 bg-gray-100 text-gray-600 rounded-lg font-bold text-sm">취소</button>
+                                <button type="submit" className="flex-1 py-3 bg-green-600 text-white rounded-lg font-bold text-sm">확인</button>
+                            </div>
+                        </form>
+                    </div>
+                </div>
+            );
+        };
+
+        // --- 컴포넌트: 게시물 카드 ---
+        const PostCard = ({ post, user, onLike, onRequestEdit, onRequestDelete }) => {
+            const isOwner = user && post.userId === user.uid;
+
+            return (
+                <div className="bg-white rounded-xl shadow-sm overflow-hidden border border-gray-100 animate-fade-in-up mb-6">
+                    <div className="p-4 flex items-center justify-between border-b border-gray-50">
+                        <div className="flex items-center gap-2">
+                            <span className="inline-block px-2 py-0.5 rounded bg-gray-100 text-gray-600 text-xs font-bold">{post.category}</span>
+                            {post.location && (
+                                <div className="flex items-center text-gray-400 text-xs">
+                                    <MapPin size={12} className="mr-1" />
+                                    {post.location}
+                                </div>
+                            )}
+                        </div>
+                        <div className="flex items-center gap-2">
+                            <span className="text-xs text-gray-400">
+                                {post.createdAt ? new Date(post.createdAt.seconds * 1000).toLocaleDateString() : '방금 전'}
+                            </span>
+                            <div className="flex items-center gap-1 pl-2 ml-2 border-l border-gray-200">
+                                <button 
+                                    onClick={() => onRequestEdit(post)}
+                                    className={`p-1.5 rounded transition ${isOwner ? 'text-green-500 hover:bg-green-50' : 'text-gray-300 hover:text-green-600 hover:bg-green-50'}`}
+                                    title="수정"
+                                >
+                                    <Edit2 size={14} />
+                                </button>
+                                <button 
+                                    onClick={() => onRequestDelete(post)}
+                                    className={`p-1.5 rounded transition ${isOwner ? 'text-red-400 hover:bg-red-50' : 'text-gray-300 hover:text-red-600 hover:bg-red-50'}`}
+                                    title="삭제"
+                                >
+                                    <Trash2 size={14} />
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+
+                    {post.imageUrl ? (
+                        <div className="w-full aspect-video bg-gray-100 relative group">
+                            <img src={post.imageUrl} alt="Post" className="w-full h-full object-cover" />
+                        </div>
+                    ) : (
+                        <div className="w-full h-32 bg-gray-50 flex items-center justify-center text-gray-400 text-sm italic">사진 없음</div>
+                    )}
+
+                    <div className="p-4">
+                        <div className="flex items-center justify-between mb-3">{getEmotionBadge(post.emotion)}</div>
+                        <p className="text-gray-800 text-sm leading-relaxed whitespace-pre-wrap">{post.description}</p>
+                    </div>
+
+                    <div className="px-4 py-3 bg-gray-50 flex items-center justify-between border-t border-gray-100">
+                        <button 
+                            onClick={() => onLike(post.id)}
+                            className="flex items-center gap-1.5 text-gray-500 hover:text-red-500 transition-colors group"
+                        >
+                            <Heart size={18} className="group-hover:fill-red-500 group-active:scale-125 transition-transform" />
+                            <span className="text-sm font-medium">{post.likes || 0} 공감</span>
+                        </button>
+                    </div>
+                </div>
+            );
+        };
+
+        // --- 메인 앱 ---
+        const App = () => {
+            const [user, setUser] = useState(null);
+            const [posts, setPosts] = useState([]);
+            const [loading, setLoading] = useState(true);
+            const [activeTab, setActiveTab] = useState('feed'); 
+            const [editingPostId, setEditingPostId] = useState(null); 
+            const [imagePreview, setImagePreview] = useState(null);
+            const [description, setDescription] = useState('');
+            const [location, setLocation] = useState('');
+            const [selectedEmotion, setSelectedEmotion] = useState(null);
+            const [selectedCategory, setSelectedCategory] = useState('쓰레기/투기');
+            const [postPassword, setPostPassword] = useState(''); 
+            const [isSubmitting, setIsSubmitting] = useState(false);
+            const fileInputRef = useRef(null);
+            const [verification, setVerification] = useState({ isOpen: false, post: null, action: null });
+
+            // 인증 처리
+            useEffect(() => {
+                const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
+                    setUser(currentUser);
+                    setLoading(false);
+                });
+                return () => unsubscribe();
+            }, []);
+
+            const handleGoogleLogin = async () => {
+                const provider = new GoogleAuthProvider();
+                try {
+                    await signInWithPopup(auth, provider);
+                } catch (error) {
+                    console.error("Login Failed:", error);
+                    alert("로그인 실패: 팝업이 차단되었는지 확인해주세요.");
+                }
+            };
+
+            const handleLogout = async () => {
+                if(window.confirm("로그아웃 하시겠습니까?")) {
+                    await signOut(auth);
+                    setActiveTab('feed');
+                }
+            };
+
+            // 데이터 실시간 로드
+            useEffect(() => {
+                const q = collection(db, 'posts');
+                const unsubscribe = onSnapshot(q, (snapshot) => {
+                    const loadedPosts = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+                    loadedPosts.sort((a, b) => (b.createdAt?.seconds || 0) - (a.createdAt?.seconds || 0));
+                    setPosts(loadedPosts);
+                });
+                return () => unsubscribe();
+            }, []);
+
+            // 이미지 변경
+            const handleImageChange = (e) => {
+                const file = e.target.files[0];
+                if (!file) return;
+                const reader = new FileReader();
+                reader.onload = (event) => {
+                    const img = new Image();
+                    img.onload = () => {
+                        const canvas = document.createElement('canvas');
+                        let width = img.width, height = img.height;
+                        const MAX_DIM = 800;
+                        if (width > height) { if (width > MAX_DIM) { height *= MAX_DIM / width; width = MAX_DIM; } }
+                        else { if (height > MAX_DIM) { width *= MAX_DIM / height; height = MAX_DIM; } }
+                        canvas.width = width; canvas.height = height;
+                        const ctx = canvas.getContext('2d');
+                        ctx.drawImage(img, 0, 0, width, height);
+                        setImagePreview(canvas.toDataURL('image/jpeg', 0.7));
+                    };
+                    img.src = event.target.result;
+                };
+                reader.readAsDataURL(file);
+            };
+
+            const resetForm = () => {
+                setEditingPostId(null); setImagePreview(null); setDescription(''); setLocation('');
+                setSelectedEmotion(null); setSelectedCategory('쓰레기/투기'); setPostPassword('');
+                if (fileInputRef.current) fileInputRef.current.value = '';
+            };
+
+            const handleRequestDelete = (post) => {
+                if (user && post.userId === user.uid) {
+                    if(window.confirm("내가 작성한 글입니다. 정말 삭제하시겠습니까?")) performDelete(post.id);
+                } else {
+                    setVerification({ isOpen: true, post: post, action: 'delete' });
+                }
+            };
+
+            const handleRequestEdit = (post) => {
+                if (user && post.userId === user.uid) performEditStart(post);
+                else setVerification({ isOpen: true, post: post, action: 'edit' });
+            };
+
+            const handleVerification = (inputPassword) => {
+                const { post, action } = verification;
+                const isMaster = inputPassword === MASTER_PASSWORD;
+                const isCorrect = isMaster || (post.password && inputPassword === post.password);
+
+                if (isCorrect) {
+                    if (action === 'delete') performDelete(post.id);
+                    else if (action === 'edit') performEditStart(post);
+                    setVerification({ isOpen: false, post: null, action: null });
+                } else {
+                    alert("비밀번호가 일치하지 않습니다.");
+                }
+            };
+
+            const performDelete = async (postId) => {
+                try {
+                    await deleteDoc(doc(db, 'posts', postId));
+                    if (editingPostId === postId) { resetForm(); setActiveTab('feed'); }
+                } catch (error) { alert("삭제 실패"); }
+            };
+
+            const performEditStart = (post) => {
+                setEditingPostId(post.id); setImagePreview(post.imageUrl); setDescription(post.description);
+                setLocation(post.location); setSelectedEmotion(post.emotion); setSelectedCategory(post.category);
+                setPostPassword(post.password || ''); setActiveTab('write'); window.scrollTo({ top: 0, behavior: 'smooth' });
+            };
+
+            const handleSubmit = async (e) => {
+                e.preventDefault();
+                if (!description || !selectedEmotion || !user || !postPassword) return;
+                setIsSubmitting(true);
+                try {
+                    const postData = {
+                        imageUrl: imagePreview, description, location, emotion: selectedEmotion,
+                        category: selectedCategory, password: postPassword
+                    };
+                    if (editingPostId) {
+                        await updateDoc(doc(db, 'posts', editingPostId), { ...postData, updatedAt: serverTimestamp() });
+                    } else {
+                        await addDoc(collection(db, 'posts'), {
+                            ...postData, userId: user.uid, createdAt: serverTimestamp(), likes: 0
+                        });
+                    }
+                    resetForm(); setActiveTab('feed');
+                } catch (error) { alert("저장 실패"); } finally { setIsSubmitting(false); }
+            };
+
+            const handleLike = async (postId) => {
+                if (!user) return;
+                try { await updateDoc(doc(db, 'posts', postId), { likes: increment(1) }); } catch (error) {}
+            };
+
+            if (loading) return <div className="flex items-center justify-center h-screen bg-gray-50 text-green-600">로딩 중...</div>;
+            if (!user) return <LoginScreen onLogin={handleGoogleLogin} />;
+
+            return (
+                <div className="min-h-screen bg-gray-100 font-sans pb-20 md:pb-0">
+                    <header className="bg-white shadow-sm sticky top-0 z-10">
+                        <div className="max-w-md mx-auto px-4 py-4 flex items-center justify-between">
+                            <div className="flex items-center gap-2">
+                                <div className="bg-green-500 p-2 rounded-lg text-white"><Camera size={20} /></div>
+                                <h1 className="text-xl font-bold text-gray-800">그린 렌즈</h1>
+                            </div>
+                            <button onClick={handleLogout} className="text-gray-400 hover:text-gray-600 flex items-center gap-1 text-xs">
+                                <LogOut size={14}/> 로그아웃
+                            </button>
+                        </div>
+                    </header>
+
+                    <main className="max-w-md mx-auto pt-4 px-4">
+                        <div className="flex bg-white rounded-xl p-1 mb-4 shadow-sm">
+                            <button onClick={() => { resetForm(); setActiveTab('feed'); }} className={`flex-1 py-2 rounded-lg text-sm font-medium transition-colors ${activeTab === 'feed' ? 'bg-green-100 text-green-700' : 'text-gray-500 hover:bg-gray-50'}`}>우리들의 이야기</button>
+                            <button onClick={() => setActiveTab('write')} className={`flex-1 py-2 rounded-lg text-sm font-medium transition-colors ${activeTab === 'write' ? 'bg-green-100 text-green-700' : 'text-gray-500 hover:bg-gray-50'}`}>{editingPostId ? '게시물 수정' : '제보하기'}</button>
+                        </div>
+
+                        {activeTab === 'write' && (
+                            <div className="bg-white rounded-xl shadow-sm p-5 animate-fade-in">
+                                <div className="flex items-center justify-between mb-4">
+                                    <h2 className="text-lg font-bold text-gray-800">{editingPostId ? '게시물 수정하기' : '환경 문제 제보하기'}</h2>
+                                    {editingPostId && (<button onClick={() => {resetForm(); setActiveTab('feed');}} className="text-xs text-gray-500 hover:text-red-500 flex items-center gap-1 bg-gray-100 px-2 py-1 rounded"><RotateCcw size={12}/> 취소</button>)}
+                                </div>
+                                <form onSubmit={handleSubmit} className="space-y-4">
+                                    <div className="relative border-2 border-dashed border-gray-300 rounded-xl aspect-video flex flex-col items-center justify-center bg-gray-50 hover:bg-gray-100 transition cursor-pointer overflow-hidden group" onClick={() => fileInputRef.current?.click()}>
+                                        {imagePreview ? (<><img src={imagePreview} alt="Preview" className="w-full h-full object-cover" /><div className="absolute inset-0 bg-black/40 flex items-center justify-center opacity-0 group-hover:opacity-100 transition"><p className="text-white text-sm font-bold">사진 변경하기</p></div></>) : (<><ImageIcon className="text-gray-400 mb-2" size={32} /><p className="text-gray-500 text-sm font-medium">사진을 올려주세요</p></>)}
+                                        <input type="file" ref={fileInputRef} className="hidden" accept="image/*" onChange={handleImageChange} />
+                                    </div>
+                                    <div>
+                                        <label className="block text-sm font-bold text-gray-700 mb-1 flex items-center gap-1"><Lock size={14} className="text-green-600"/> 게시물 비밀번호 (필수)</label>
+                                        <input type="password" value={postPassword} onChange={(e) => setPostPassword(e.target.value)} placeholder="관리용 비밀번호 (4자리 이상)" className="w-full p-3 rounded-lg border border-gray-200 bg-white focus:ring-2 focus:ring-green-500 outline-none text-sm" required />
+                                    </div>
+                                    <div className="grid grid-cols-2 gap-4">
+                                        <div><label className="block text-sm font-bold text-gray-700 mb-1">카테고리</label><select value={selectedCategory} onChange={(e) => setSelectedCategory(e.target.value)} className="w-full p-3 rounded-lg border border-gray-200 bg-white focus:ring-2 focus:ring-green-500 outline-none text-sm">{categories.map(cat => <option key={cat} value={cat}>{cat}</option>)}</select></div>
+                                        <div><label className="block text-sm font-bold text-gray-700 mb-1">장소</label><input type="text" value={location} onChange={(e) => setLocation(e.target.value)} placeholder="장소 입력" className="w-full p-3 rounded-lg border border-gray-200 outline-none text-sm" /></div>
+                                    </div>
+                                    <div>
+                                        <label className="block text-sm font-bold text-gray-700 mb-2">어떤 생각이 들었나요?</label>
+                                        <div className="grid grid-cols-2 gap-2">{emotions.map((emo) => (<button key={emo.id} type="button" onClick={() => setSelectedEmotion(emo.id)} className={`p-3 rounded-lg border flex items-center justify-center gap-2 transition-all ${selectedEmotion === emo.id ? `${emo.color} border-current ring-1 ring-current shadow-sm` : 'bg-white border-gray-200 text-gray-500 hover:bg-gray-50'}`}>{emo.icon} <span className="text-sm font-medium">{emo.label}</span></button>))}</div>
+                                    </div>
+                                    <div><label className="block text-sm font-bold text-gray-700 mb-1">내용</label><textarea value={description} onChange={(e) => setDescription(e.target.value)} placeholder="내용을 입력하세요" className="w-full p-3 rounded-lg border border-gray-200 h-24 resize-none outline-none focus:ring-2 focus:ring-green-500 text-sm" /></div>
+                                    <button type="submit" disabled={isSubmitting || !description || !selectedEmotion || !postPassword} className={`w-full py-4 rounded-xl font-bold text-white shadow-md flex items-center justify-center gap-2 transition-all ${isSubmitting || !description || !selectedEmotion || !postPassword ? 'bg-gray-300 cursor-not-allowed' : 'bg-green-600 hover:bg-green-700 active:scale-95'}`}>{isSubmitting ? '저장 중...' : (editingPostId ? '수정 완료' : '공유하기')} <Send size={18} /></button>
+                                </form>
+                            </div>
+                        )}
+
+                        {activeTab === 'feed' && (
+                            <div className="space-y-6">
+                                {posts.length === 0 ? (
+                                    <div className="text-center py-20">
+                                        <div className="inline-block p-4 rounded-full bg-green-50 text-green-500 mb-4"><Camera size={40} /></div>
+                                        <h3 className="text-lg font-bold text-gray-700">게시물이 없습니다</h3>
+                                        <button onClick={() => setActiveTab('write')} className="mt-6 px-6 py-2 bg-green-600 text-white rounded-full text-sm font-medium hover:bg-green-700 transition">첫 제보하기</button>
+                                    </div>
+                                ) : (posts.map((post) => (<PostCard key={post.id} post={post} user={user} onLike={handleLike} onRequestEdit={handleRequestEdit} onRequestDelete={handleRequestDelete} />)))}
+                            </div>
+                        )}
+                        <PasswordModal isOpen={verification.isOpen} onClose={() => setVerification({ isOpen: false, post: null, action: null })} onConfirm={handleVerification} title={verification.action === 'delete' ? '게시물 삭제' : '게시물 수정'} />
+                    </main>
+                </div>
+            );
+        };
+
+        // --- 앱 렌더링 ---
+        const root = createRoot(document.getElementById('root'));
+        root.render(<App />);
+    </script>
+</body>
+</html>
